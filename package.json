@@ -11,6 +11,7 @@
     "build:pages": "tsc && vite build",
     "start": "tsx server/index.ts",
     "setup:db": "node scripts/setup-db.mjs",
+    "db:init-remote": "node scripts/init-remote-db.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

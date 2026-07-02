@@ -1,13 +1,21 @@
+# Render: App + API (kostenloser Web-Service)
+# PostgreSQL: kostenlos bei https://neon.tech → Connection String als DATABASE_URL in Render setzen
+# Deploy: https://render.com/deploy?repo=https://github.com/StefiBackup/Bewerbung
+
 services:
   - type: web
-    name: bewerbungen-api
+    name: bewerbungen
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm ci && BASE_PATH=/ npm run build
     startCommand: npm run start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: BASE_PATH
+        value: /
       - key: JWT_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        sync: false

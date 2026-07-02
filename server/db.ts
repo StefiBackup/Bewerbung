@@ -26,8 +26,16 @@ function getDatabaseUrl(): string {
   return url
 }
 
+function useSsl(): boolean | { rejectUnauthorized: boolean } {
+  const url = process.env.DATABASE_URL ?? ''
+  if (process.env.PGSSLMODE === 'disable') return false
+  if (url.includes('localhost') || url.includes('127.0.0.1')) return false
+  return { rejectUnauthorized: false }
+}
+
 export const pool = new Pool({
   connectionString: getDatabaseUrl(),
+  ssl: useSsl(),
 })
 
 pool.on('error', (err) => {
