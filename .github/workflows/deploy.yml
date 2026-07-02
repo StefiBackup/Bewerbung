@@ -31,7 +31,7 @@ jobs:
         run: npm run build
         env:
           BASE_PATH: /${{ github.event.repository.name }}/
-          # Backend-URL setzen: Repository → Settings → Secrets → VITE_API_URL
+          # Nur bei online-Backend setzen: Repository → Secrets → VITE_API_URL
           # z.B. https://dein-backend.onrender.com/api
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
 

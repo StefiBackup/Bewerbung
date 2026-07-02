@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ApiError } from '../utils/api'
+import { ApiError, isPagesWithoutBackend } from '../utils/api'
 import { useAuth } from '../hooks/useAuth'
 import { TextInput } from './ui'
 
@@ -9,6 +9,7 @@ export function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const pagesOnly = isPagesWithoutBackend()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -33,6 +34,13 @@ export function Login() {
         </div>
 
         <form onSubmit={handleSubmit} className="rounded-xl border border-slate-700/50 bg-slate-800/30 p-6 space-y-4">
+          {pagesOnly && (
+            <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+              Diese GitHub-Seite hat kein Backend. Für Login mit deiner PostgreSQL-Datenbank starte die App lokal mit{' '}
+              <code className="text-amber-200">npm run dev</code> und öffne{' '}
+              <code className="text-amber-200">http://localhost:5173</code>.
+            </p>
+          )}
           <TextInput
             label="Benutzername"
             value={username}

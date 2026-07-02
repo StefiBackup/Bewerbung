@@ -1,7 +1,19 @@
 import type { AppState } from '../types'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? '/api'
+/** Leeres Secret in GitHub Actions würde sonst '' statt '/api' ergeben. */
+export const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '')
 const TOKEN_KEY = 'bewerbungen_auth_token'
+
+/** GitHub Pages ohne externes Backend (https://…). */
+export function isPagesWithoutBackend(): boolean {
+  const configured = import.meta.env.VITE_API_URL as string | undefined
+  return (
+    import.meta.env.PROD &&
+    typeof window !== 'undefined' &&
+    window.location.hostname.endsWith('github.io') &&
+    !(configured && configured.startsWith('http'))
+  )
+}
 
 export class ApiError extends Error {
   constructor(
@@ -45,6 +57,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     let message = 'Anfrage fehlgeschlagen'
+    if (res.status === 405 && isPagesWithoutBackend()) {
+      message =
+        'Login auf GitHub Pages nicht möglich – dort läuft kein Backend. Bitte lokal starten: npm run dev'
+    } else if (res.status === 404 && isPagesWithoutBackend()) {
+      message =
+        'Backend nicht erreichbar. GitHub Pages liefert nur die Oberfläche – nutze npm run dev oder deploye das Backend separat.'
+    }
     try {
       const data = (await res.json()) as { error?: string }
       if (data.error) message = data.error
