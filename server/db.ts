@@ -1,12 +1,8 @@
-import Database from 'better-sqlite3'
+import pg from 'pg'
 import bcrypt from 'bcryptjs'
-import { mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { AppStatePayload, PublicUser, UserRow } from './types.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const DB_PATH = process.env.DB_PATH ?? join(__dirname, 'data', 'app.db')
+const { Pool } = pg
 
 const SEED_USERS = [
   { username: 'admin', password: 'admin', role: 'admin' as const },
@@ -20,72 +16,97 @@ const EMPTY_STATE: AppStatePayload = {
   interviewNotes: [],
 }
 
-mkdirSync(dirname(DB_PATH), { recursive: true })
+function getDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL
+  if (!url) {
+    throw new Error(
+      'DATABASE_URL fehlt. Beispiel: postgresql://postgres:postgres@localhost:5432/bewerbungen',
+    )
+  }
+  return url
+}
 
-export const db = new Database(DB_PATH)
+export const pool = new Pool({
+  connectionString: getDatabaseUrl(),
+})
 
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
+pool.on('error', (err) => {
+  console.error('PostgreSQL Pool-Fehler:', err)
+})
 
-db.exec(`
+const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
-    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
-    created_at TEXT NOT NULL
+    role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users (LOWER(username));
 
   CREATE TABLE IF NOT EXISTS user_data (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    data TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
-`)
+`
 
-function seedUsers() {
-  const count = db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }
-  if (count.c > 0) return
-
-  const insertUser = db.prepare(
-    'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
-  )
-  const insertData = db.prepare(
-    'INSERT INTO user_data (user_id, data, updated_at) VALUES (?, ?, ?)',
-  )
+async function seedUsers(client: pg.PoolClient) {
+  const { rows } = await client.query<{ c: string }>('SELECT COUNT(*)::text AS c FROM users')
+  if (Number(rows[0]?.c ?? 0) > 0) return
 
   const now = new Date().toISOString()
 
-  const tx = db.transaction(() => {
-    for (const user of SEED_USERS) {
-      const id = crypto.randomUUID()
-      const passwordHash = bcrypt.hashSync(user.password, 10)
-      insertUser.run(id, user.username, passwordHash, user.role, now)
-      insertData.run(id, JSON.stringify(EMPTY_STATE), now)
-    }
-  })
+  for (const user of SEED_USERS) {
+    const id = crypto.randomUUID()
+    const passwordHash = bcrypt.hashSync(user.password, 10)
 
-  tx()
+    await client.query(
+      'INSERT INTO users (id, username, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5)',
+      [id, user.username, passwordHash, user.role, now],
+    )
+
+    await client.query(
+      'INSERT INTO user_data (user_id, data, updated_at) VALUES ($1, $2::jsonb, $3)',
+      [id, JSON.stringify(EMPTY_STATE), now],
+    )
+  }
 }
 
-seedUsers()
-
-export function findUserByUsername(username: string): UserRow | undefined {
-  return db
-    .prepare('SELECT id, username, password_hash, role, created_at FROM users WHERE username = ? COLLATE NOCASE')
-    .get(username) as UserRow | undefined
+export async function initDb() {
+  const client = await pool.connect()
+  try {
+    await client.query(SCHEMA_SQL)
+    await seedUsers(client)
+  } finally {
+    client.release()
+  }
 }
 
-export function findUserById(id: string): UserRow | undefined {
-  return db
-    .prepare('SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?')
-    .get(id) as UserRow | undefined
+export async function findUserByUsername(username: string): Promise<UserRow | undefined> {
+  const { rows } = await pool.query<UserRow>(
+    'SELECT id, username, password_hash, role, created_at FROM users WHERE LOWER(username) = LOWER($1)',
+    [username],
+  )
+  return rows[0]
 }
 
-export function listUsers(): PublicUser[] {
-  const rows = db
-    .prepare('SELECT id, username, role, created_at FROM users ORDER BY username COLLATE NOCASE')
-    .all() as Array<{ id: string; username: string; role: 'admin' | 'user'; created_at: string }>
+export async function findUserById(id: string): Promise<UserRow | undefined> {
+  const { rows } = await pool.query<UserRow>(
+    'SELECT id, username, password_hash, role, created_at FROM users WHERE id = $1',
+    [id],
+  )
+  return rows[0]
+}
+
+export async function listUsers(): Promise<PublicUser[]> {
+  const { rows } = await pool.query<{
+    id: string
+    username: string
+    role: 'admin' | 'user'
+    created_at: string
+  }>('SELECT id, username, role, created_at FROM users ORDER BY LOWER(username)')
 
   return rows.map((row) => ({
     id: row.id,
@@ -95,62 +116,69 @@ export function listUsers(): PublicUser[] {
   }))
 }
 
-export function createUser(username: string, password: string, role: 'user' = 'user'): PublicUser {
-  const existing = findUserByUsername(username)
+export async function createUser(
+  username: string,
+  password: string,
+  role: 'user' = 'user',
+): Promise<PublicUser> {
+  const existing = await findUserByUsername(username)
   if (existing) throw new Error('USERNAME_EXISTS')
 
   const id = crypto.randomUUID()
   const now = new Date().toISOString()
   const passwordHash = bcrypt.hashSync(password, 10)
+  const trimmed = username.trim()
 
-  const tx = db.transaction(() => {
-    db.prepare(
-      'INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(id, username.trim(), passwordHash, role, now)
-
-    db.prepare('INSERT INTO user_data (user_id, data, updated_at) VALUES (?, ?, ?)').run(
-      id,
-      JSON.stringify(EMPTY_STATE),
-      now,
-    )
-  })
-
-  tx()
-
-  return { id, username: username.trim(), role, createdAt: now }
-}
-
-export function getUserState(userId: string): AppStatePayload {
-  const row = db
-    .prepare('SELECT data FROM user_data WHERE user_id = ?')
-    .get(userId) as { data: string } | undefined
-
-  if (!row) {
-    const now = new Date().toISOString()
-    db.prepare('INSERT INTO user_data (user_id, data, updated_at) VALUES (?, ?, ?)').run(
-      userId,
-      JSON.stringify(EMPTY_STATE),
-      now,
-    )
-    return { ...EMPTY_STATE }
-  }
-
+  const client = await pool.connect()
   try {
-    const parsed = JSON.parse(row.data) as Partial<AppStatePayload>
-    return {
-      applications: parsed.applications ?? [],
-      contacts: parsed.contacts ?? [],
-      interviewNotes: parsed.interviewNotes ?? [],
-    }
-  } catch {
+    await client.query('BEGIN')
+    await client.query(
+      'INSERT INTO users (id, username, password_hash, role, created_at) VALUES ($1, $2, $3, $4, $5)',
+      [id, trimmed, passwordHash, role, now],
+    )
+    await client.query(
+      'INSERT INTO user_data (user_id, data, updated_at) VALUES ($1, $2::jsonb, $3)',
+      [id, JSON.stringify(EMPTY_STATE), now],
+    )
+    await client.query('COMMIT')
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+
+  return { id, username: trimmed, role, createdAt: now }
+}
+
+export async function getUserState(userId: string): Promise<AppStatePayload> {
+  const { rows } = await pool.query<{ data: AppStatePayload }>(
+    'SELECT data FROM user_data WHERE user_id = $1',
+    [userId],
+  )
+
+  if (!rows[0]) {
+    const now = new Date().toISOString()
+    await pool.query(
+      'INSERT INTO user_data (user_id, data, updated_at) VALUES ($1, $2::jsonb, $3)',
+      [userId, JSON.stringify(EMPTY_STATE), now],
+    )
     return { ...EMPTY_STATE }
+  }
+
+  const parsed = rows[0].data
+  return {
+    applications: parsed.applications ?? [],
+    contacts: parsed.contacts ?? [],
+    interviewNotes: parsed.interviewNotes ?? [],
   }
 }
 
-export function saveUserState(userId: string, state: AppStatePayload) {
+export async function saveUserState(userId: string, state: AppStatePayload) {
   const now = new Date().toISOString()
-  db.prepare(
-    `INSERT INTO user_data (user_id, data, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
-  ).run(userId, JSON.stringify(state), now)
+  await pool.query(
+    `INSERT INTO user_data (user_id, data, updated_at) VALUES ($1, $2::jsonb, $3)
+     ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at`,
+    [userId, JSON.stringify(state), now],
+  )
 }

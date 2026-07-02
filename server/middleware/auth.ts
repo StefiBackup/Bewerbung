@@ -17,7 +17,7 @@ export interface AuthedRequest extends Request {
   user?: JwtPayload
 }
 
-export function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Nicht angemeldet' })
@@ -26,7 +26,7 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
 
   try {
     const payload = verifyToken(header.slice(7))
-    const user = findUserById(payload.sub)
+    const user = await findUserById(payload.sub)
     if (!user) {
       res.status(401).json({ error: 'Benutzer nicht gefunden' })
       return

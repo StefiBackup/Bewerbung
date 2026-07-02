@@ -17,17 +17,25 @@ function isValidState(body: unknown): body is AppStatePayload {
   )
 }
 
-stateRouter.get('/', (req: AuthedRequest, res) => {
-  const state = getUserState(req.user!.sub)
-  res.json(state)
+stateRouter.get('/', async (req: AuthedRequest, res) => {
+  try {
+    const state = await getUserState(req.user!.sub)
+    res.json(state)
+  } catch {
+    res.status(500).json({ error: 'Daten konnten nicht geladen werden' })
+  }
 })
 
-stateRouter.put('/', (req: AuthedRequest, res) => {
+stateRouter.put('/', async (req: AuthedRequest, res) => {
   if (!isValidState(req.body)) {
     res.status(400).json({ error: 'Ungültiges Datenformat' })
     return
   }
 
-  saveUserState(req.user!.sub, req.body)
-  res.json({ ok: true })
+  try {
+    await saveUserState(req.user!.sub, req.body)
+    res.json({ ok: true })
+  } catch {
+    res.status(500).json({ error: 'Speichern fehlgeschlagen' })
+  }
 })

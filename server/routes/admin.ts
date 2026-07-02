@@ -6,11 +6,16 @@ export const adminRouter = Router()
 
 adminRouter.use(requireAuth, requireAdmin)
 
-adminRouter.get('/users', (_req: AuthedRequest, res) => {
-  res.json({ users: listUsers() })
+adminRouter.get('/users', async (_req: AuthedRequest, res) => {
+  try {
+    const users = await listUsers()
+    res.json({ users })
+  } catch {
+    res.status(500).json({ error: 'Benutzerliste konnte nicht geladen werden' })
+  }
 })
 
-adminRouter.post('/users', (req: AuthedRequest, res) => {
+adminRouter.post('/users', async (req: AuthedRequest, res) => {
   const username = typeof req.body?.username === 'string' ? req.body.username.trim() : ''
   const password = typeof req.body?.password === 'string' ? req.body.password : ''
 
@@ -25,7 +30,7 @@ adminRouter.post('/users', (req: AuthedRequest, res) => {
   }
 
   try {
-    const user = createUser(username, password, 'user')
+    const user = await createUser(username, password, 'user')
     res.status(201).json({ user })
   } catch (err) {
     if (err instanceof Error && err.message === 'USERNAME_EXISTS') {
